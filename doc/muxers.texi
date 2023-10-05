@@ -344,6 +344,11 @@ escaped.
 @item global_sidx @var{global_sidx}
 Write global SIDX atom. Applicable only for single file, mp4 output, non-streaming mode.
 
+@item use_segmentbase @var{use_segmentbase}
+Generates a dash SegmentBase manifest as defined in section 5.3.9.2 of the ISO
+DASH specification. Only applicable when global sidx is enabled since the player
+uses it to have a reference of all the segments in the media
+
 @item dash_segment_type @var{dash_segment_type}
 Possible values:
 @table @option

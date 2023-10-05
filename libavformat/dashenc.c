@@ -202,6 +202,8 @@ typedef struct DASHContext {
     AVRational min_playback_rate;
     AVRational max_playback_rate;
     int64_t update_period;
+    int use_segmentbase;
+    int64_t sidx_size;
 } DASHContext;
 
 static struct codec_string {
@@ -696,16 +698,23 @@ static void output_segment_list(OutputStream *os, AVIOContext *out, AVFormatCont
         avio_printf(out, "\t\t\t\t</SegmentTemplate>\n");
     } else if (c->single_file) {
         avio_printf(out, "\t\t\t\t<BaseURL>%s</BaseURL>\n", os->initfile);
-        avio_printf(out, "\t\t\t\t<SegmentList timescale=\"%d\" duration=\"%"PRId64"\" startNumber=\"%d\">\n", AV_TIME_BASE, FFMIN(os->seg_duration, os->last_duration), start_number);
-        avio_printf(out, "\t\t\t\t\t<Initialization range=\"%"PRId64"-%"PRId64"\" />\n", os->init_start_pos, os->init_start_pos + os->init_range_length - 1);
-        for (i = start_index; i < os->nb_segments; i++) {
-            Segment *seg = os->segments[i];
-            avio_printf(out, "\t\t\t\t\t<SegmentURL mediaRange=\"%"PRId64"-%"PRId64"\" ", seg->start_pos, seg->start_pos + seg->range_length - 1);
-            if (seg->index_length)
-                avio_printf(out, "indexRange=\"%"PRId64"-%"PRId64"\" ", seg->start_pos, seg->start_pos + seg->index_length - 1);
-            avio_printf(out, "/>\n");
+        int64_t init_segment_size = os->init_start_pos + os->init_range_length;
+        if (c->use_segmentbase && final) {
+            avio_printf(out, "\t\t\t\t<SegmentBase indexRange=\"%d-%d\" timescale=\"%d\">\n", init_segment_size - c->sidx_size, init_segment_size - 1, AV_TIME_BASE);
+            avio_printf(out, "\t\t\t\t\t<Initialization range=\"%"PRId64"-%"PRId64"\" />\n", os->init_start_pos, init_segment_size - c->sidx_size - 1);
+            avio_printf(out, "\t\t\t\t</SegmentBase>\n");
+        } else {
+            avio_printf(out, "\t\t\t\t<SegmentList timescale=\"%d\" duration=\"%"PRId64"\" startNumber=\"%d\">\n", AV_TIME_BASE, FFMIN(os->seg_duration, os->last_duration), start_number);
+            avio_printf(out, "\t\t\t\t\t<Initialization range=\"%"PRId64"-%"PRId64"\" />\n", os->init_start_pos, init_segment_size - 1);
+            for (i = start_index; i < os->nb_segments; i++) {
+                Segment *seg = os->segments[i];
+                avio_printf(out, "\t\t\t\t\t<SegmentURL mediaRange=\"%"PRId64"-%"PRId64"\" ", seg->start_pos, seg->start_pos + seg->range_length - 1);
+                if (seg->index_length)
+                    avio_printf(out, "indexRange=\"%"PRId64"-%"PRId64"\" ", seg->start_pos, seg->start_pos + seg->index_length - 1);
+                avio_printf(out, "/>\n");
+            }
+            avio_printf(out, "\t\t\t\t</SegmentList>\n");
         }
-        avio_printf(out, "\t\t\t\t</SegmentList>\n");
     } else {
         avio_printf(out, "\t\t\t\t<SegmentList timescale=\"%d\" duration=\"%"PRId64"\" startNumber=\"%d\">\n", AV_TIME_BASE, FFMIN(os->seg_duration, os->last_duration), start_number);
         avio_printf(out, "\t\t\t\t\t<Initialization sourceURL=\"%s\" />\n", os->initfile);
@@ -1430,6 +1439,12 @@ static int dash_init(AVFormatContext *s)
         av_log(s, AV_LOG_WARNING, "Global SIDX option will be ignored as streaming is enabled\n");
         c->global_sidx = 0;
     }
+
+    if (c->use_segmentbase && !c->global_sidx) {
+        av_log(s, AV_LOG_WARNING, "SegmentBase manifest signaling option will be ignored as global SIDX is not enabled\n");
+        c->use_segmentbase = 0;
+    }
+
     if (c->frag_type == FRAG_TYPE_NONE && c->streaming) {
         av_log(s, AV_LOG_VERBOSE, "Changing frag_type from none to every_frame as streaming is enabled\n");
         c->frag_type = FRAG_TYPE_EVERY_FRAME;
@@ -2020,6 +2035,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
                 if (c->global_sidx) {
                     int j, start_index, start_number;
                     int64_t sidx_size = avio_tell(os->ctx->pb) - file_size;
+                    c->sidx_size = sidx_size;
                     get_start_index_number(os, c, &start_index, &start_number);
                     if (start_index >= os->nb_segments ||
                         os->segment_type != SEGMENT_TYPE_MP4)
@@ -2396,6 +2412,7 @@ static const AVOption options[] = {
     { "index_correction", "Enable/Disable segment index correction logic", OFFSET(index_correction), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "format_options","set list of options for the container format (mp4/webm) used for dash", OFFSET(format_options), AV_OPT_TYPE_DICT, {.str = NULL},  0, 0, E},
     { "global_sidx", "Write global SIDX atom. Applicable only for single file, mp4 output, non-streaming mode", OFFSET(global_sidx), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
+    { "use_segmentbase", "Use SegmentBase in Representation", OFFSET(use_segmentbase), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "dash_segment_type", "set dash segment files type", OFFSET(segment_type_option), AV_OPT_TYPE_INT, {.i64 = SEGMENT_TYPE_AUTO }, 0, SEGMENT_TYPE_NB - 1, E, "segment_type"},
     { "auto", "select segment file format based on codec", 0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_TYPE_AUTO }, 0, UINT_MAX,   E, "segment_type"},
     { "mp4", "make segment file in ISOBMFF format", 0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_TYPE_MP4 }, 0, UINT_MAX,   E, "segment_type"},
